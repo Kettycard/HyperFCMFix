@@ -1,19 +1,25 @@
 package org.hermes.hyperfcmfix
 
+import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
+import android.database.ContentObserver
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
-import java.lang.reflect.Method
-import java.lang.reflect.Modifier
 
 class ModernHook : XposedModule() {
 
     companion object {
         private const val TAG = "HyperFCMFix"
         private const val GMS_PKG = "com.google.android.gms"
+        private const val SETTING_MILLET = "MILLET_NO_RESTRICT_APP"
         private const val OP_AUTO_START = 10008
         private const val MODE_ALLOWED = 0
 
@@ -32,16 +38,12 @@ class ModernHook : XposedModule() {
     }
 
     override fun onPackageLoaded(param: PackageLoadedParam) {
-        val packageName = param.packageName
-        val classLoader = param.defaultClassLoader
-
-        if (packageName == "com.miui.powerkeeper") {
-            hookPowerKeeper(classLoader)
-        }
+        // HyperOS 4 将后台控制策略全部下沉至 system_server (Greezer/Aurogon)
+        // 不再需要 hook 独立 PowerKeeper.apk 进程
     }
 
     /**
-     * 1. 拦截 DeviceIdleController，强制 GMS 进入白名单
+     * 1. 拦截 DeviceIdleController，强制 GMS 进入电池优化白名单
      */
     private fun hookDeviceIdleController(classLoader: ClassLoader) {
         try {
@@ -67,7 +69,7 @@ class ModernHook : XposedModule() {
     }
 
     /**
-     * 2. 拦截 AppOpsService，解除 GMS 自启动限制
+     * 2. 拦截 AppOpsService，解除 GMS 自启动和唤醒限制
      */
     private fun hookAppOpsService(classLoader: ClassLoader) {
         try {
@@ -96,7 +98,7 @@ class ModernHook : XposedModule() {
     }
 
     /**
-     * 3. 拦截 BroadcastQueue / BroadcastController，解除 Stopped 限制
+     * 3. 拦截 BroadcastQueue / BroadcastController，解除 Stopped 应用拦截
      */
     private fun hookBroadcastQueue(classLoader: ClassLoader) {
         val targets = listOf(
@@ -135,7 +137,7 @@ class ModernHook : XposedModule() {
     }
 
     /**
-     * 4. 系统启动后执行特权命令
+     * 4. 系统启动后执行特权命令，并监听/保持 MILLET_NO_RESTRICT_APP 白名单
      */
     private fun hookSystemReady(classLoader: ClassLoader) {
         try {
@@ -144,10 +146,12 @@ class ModernHook : XposedModule() {
                 if (m.name == "systemReady") {
                     hook(m).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
                         val res = chain.proceed()
+                        val amsInstance = chain.thisObject
                         Thread {
                             try {
-                                Thread.sleep(8000)
+                                Thread.sleep(6000)
                                 executePrivilegedCommands()
+                                registerMilletObserver(amsInstance)
                             } catch (e: Throwable) {
                                 log(Log.WARN, TAG, "后台特权执行线程异常: ${e.message}")
                             }
@@ -167,38 +171,44 @@ class ModernHook : XposedModule() {
         }
     }
 
-    /**
-     * 5. 拦截 PowerKeeper 防止 GMS 被剔除出无限制列表
-     */
-    private fun hookPowerKeeper(classLoader: ClassLoader) {
+    private fun registerMilletObserver(amsInstance: Any?) {
         try {
-            val clazz = classLoader.loadClass("com.miui.powerkeeper.statemachine.ActiveStateController")
-            for (m in clazz.declaredMethods) {
-                if (m.name == "dealNoRestrictApp") {
-                    hook(m).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
-                        val res = chain.proceed()
-                        try {
-                            for (field in clazz.declaredFields) {
-                                if (field.name == "MILLET_NO_RESTRICT_APP") {
-                                    field.isAccessible = true
-                                    val list = field.get(chain.thisObject) as? MutableList<String>
-                                    if (list != null && !list.contains(GMS_PKG)) {
-                                        list.add(GMS_PKG)
-                                    }
-                                    break
-                                }
-                            }
-                        } catch (t: Throwable) {
-                            log(Log.WARN, TAG, "更新 MILLET_NO_RESTRICT_APP 异常: ${t.message}")
-                        }
-                        res
-                    }
-                    log(Log.INFO, TAG, "已安全 Hook ActiveStateController.dealNoRestrictApp")
-                    break
+            if (amsInstance == null) return
+            val contextField = amsInstance.javaClass.getDeclaredField("mContext")
+            contextField.isAccessible = true
+            val context = contextField.get(amsInstance) as? Context ?: return
+            val resolver = context.contentResolver
+
+            // 立即确保包含 GMS
+            ensureGmsInMillet(resolver)
+
+            // 监听 MILLET_NO_RESTRICT_APP 变动（PowerKeeper 覆写时立刻补回 GMS）
+            val uri = Settings.System.getUriFor(SETTING_MILLET)
+            val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean, uri: Uri?) {
+                    super.onChange(selfChange, uri)
+                    ensureGmsInMillet(resolver)
                 }
             }
-        } catch (t: Throwable) {
-            log(Log.WARN, TAG, "Hook PowerKeeper 失败: ${t.message}")
+            resolver.registerContentObserver(uri, false, observer)
+            log(Log.INFO, TAG, "成功注册 MILLET_NO_RESTRICT_APP 动态保活监听器")
+        } catch (e: Throwable) {
+            log(Log.WARN, TAG, "注册 MILLET 监听器失败: ${e.message}")
+        }
+    }
+
+    private fun ensureGmsInMillet(resolver: ContentResolver) {
+        try {
+            val current = Settings.System.getString(resolver, SETTING_MILLET) ?: ""
+            val list = current.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            if (!list.contains(GMS_PKG)) {
+                list.add(GMS_PKG)
+                val updated = list.joinToString(",")
+                Settings.System.putString(resolver, SETTING_MILLET, updated)
+                log(Log.INFO, TAG, "MILLET_NO_RESTRICT_APP 自动补齐 GMS -> $updated")
+            }
+        } catch (e: Throwable) {
+            log(Log.WARN, TAG, "ensureGmsInMillet 异常: ${e.message}")
         }
     }
 
