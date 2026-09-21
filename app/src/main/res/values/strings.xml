@@ -1,3 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">HyperOS FCM Fix</string>
+    <string name="app_name">HyperOS FCM Fix (API 102)</string>
+    <string name="app_desc">现代 LibXposed API 102 模块：修复锁屏 Google 服务冻结、解除自启与省电限制、保证 FCM 实时唤醒。</string>
 </resources>
