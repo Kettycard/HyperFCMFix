@@ -3,7 +3,6 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@mipmap/ic_launcher"
         android:label="HyperOS FCM Fix"
         android:supportsRtl="true">
 
@@ -12,7 +11,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="HyperOS 4 专用 FCM 修复与开机自启/电池无限制增强模块" />
+            android:value="专为 HyperOS 4 设计的 FCM 保活与自启动穿透修复模块" />
         <meta-data
             android:name="xposedminversion"
             android:value="82" />
