@@ -21,6 +21,8 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
 
       - name: Build with Gradle
         run: gradle assembleRelease --stacktrace
@@ -31,10 +33,15 @@ jobs:
           name: HyperFCMFix-release-apk
           path: app/build/outputs/apk/release/*.apk
 
-      - name: Create Release (Optional for Tags)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create Release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
         with:
+          tag_name: v1.0.0
+          name: "HyperFCMFix v1.0.0"
+          body: "HyperOS 4 FCM Fix LSPosed Module (Release APK)"
+          draft: false
+          prerelease: false
           files: app/build/outputs/apk/release/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
