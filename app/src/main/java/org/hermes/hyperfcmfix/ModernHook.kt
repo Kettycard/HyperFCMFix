@@ -36,6 +36,7 @@ class ModernHook : XposedModule() {
         hookAppOpsService(classLoader)
         hookBroadcastQueue(classLoader)
         hookXiaomiBroadcastStub(classLoader)
+        injectGreezerWhiteList(classLoader)
         hookSystemReady(classLoader)
     }
 
@@ -282,6 +283,36 @@ class ModernHook : XposedModule() {
             } catch (e: Throwable) {
                 log(Log.WARN, TAG, "执行指令失败: [$cmd], 错误: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * 5. 核心攻坚：动态注入小米 Greezer 的 mBroadcastTargetWhiteList
+     * 将所有 FCM 接收应用加入小米私有广播白名单，并在收到 FCM 时放行
+     */
+    private fun injectGreezerWhiteList(classLoader: ClassLoader) {
+        try {
+            val greezeClass = classLoader.loadClass("com.miui.server.greeze.GreezeManagerService")
+            for (field in greezeClass.declaredFields) {
+                if (field.name == "mBroadcastTargetWhiteList") {
+                    field.isAccessible = true
+                    val whiteList = field.get(null) as? MutableMap<String, MutableList<String>>
+                    if (whiteList != null) {
+                        val actions = mutableListOf(
+                            FCM_RECEIVE_ACTION,
+                            FCM_REGISTRATION_ACTION,
+                            "android.net.wifi.STATE_CHANGE",
+                            "android.net.conn.CONNECTIVITY_CHANGE"
+                        )
+                        whiteList["org.telegram.messenger"] = actions
+                        whiteList["com.nextcloud.talk2"] = actions
+                        whiteList["com.google.android.gms"] = actions
+                        log(Log.INFO, TAG, "成功向 GreezeManagerService.mBroadcastTargetWhiteList 注入 FCM 白名单！")
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            log(Log.WARN, TAG, "注入 GreezeManagerService 白名单失败: ${t.message}")
         }
     }
 }
