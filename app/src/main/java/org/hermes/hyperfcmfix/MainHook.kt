@@ -17,7 +17,8 @@ class MainHook : IXposedHookLoadPackage {
         const val ACTION_RECEIVE = "com.google.android.c2dm.intent.RECEIVE"
         const val FLAG_RECEIVER_INCLUDE_STOPPED_PACKAGES = 0x00000020
         const val FLAG_RECEIVER_EXCLUDE_STOPPED_PACKAGES = 0x00000010
-        const val OP_AUTO_START = 10008 // HyperOS 特有自启动 Op Code
+        const val OP_AUTO_START = 10008
+        const val OP_BOOT_COMPLETED = 48 // OP_BOOT_COMPLETED 隐匿常量
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -118,7 +119,7 @@ class MainHook : IXposedHookLoadPackage {
                             val code = param.args.getOrNull(0) as? Int ?: return
                             val pkg = param.args.getOrNull(2) as? String
                             if (pkg == GMS_PKG) {
-                                if (code == OP_AUTO_START || code == AppOpsManager.OP_BOOT_COMPLETED) {
+                                if (code == OP_AUTO_START || code == OP_BOOT_COMPLETED) {
                                     param.result = AppOpsManager.MODE_ALLOWED
                                 }
                             }
