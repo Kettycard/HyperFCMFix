@@ -299,8 +299,8 @@ class ModernHook : XposedModule() {
                     val whiteList = field.get(null) as? MutableMap<String, MutableList<String>>
                     if (whiteList != null) {
                         val actions = mutableListOf(
-                            FCM_RECEIVE_ACTION,
-                            FCM_REGISTRATION_ACTION,
+                            "com.google.android.c2dm.intent.RECEIVE",
+                            "com.google.android.c2dm.intent.REGISTRATION",
                             "android.net.wifi.STATE_CHANGE",
                             "android.net.conn.CONNECTIVITY_CHANGE"
                         )
