@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.Binder
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -34,12 +35,11 @@ class ModernHook : XposedModule() {
         hookDeviceIdleController(classLoader)
         hookAppOpsService(classLoader)
         hookBroadcastQueue(classLoader)
+        hookXiaomiBroadcastStub(classLoader)
         hookSystemReady(classLoader)
     }
 
     override fun onPackageLoaded(param: PackageLoadedParam) {
-        // HyperOS 4 将后台控制策略全部下沉至 system_server (Greezer/Aurogon)
-        // 不再需要 hook 独立 PowerKeeper.apk 进程
     }
 
     /**
@@ -69,7 +69,7 @@ class ModernHook : XposedModule() {
     }
 
     /**
-     * 2. 拦截 AppOpsService，解除 GMS 自启动和唤醒限制
+     * 2. 拦截 AppOpsService，解除 GMS 及所有被 GMS 唤醒应用的自启动限制
      */
     private fun hookAppOpsService(classLoader: ClassLoader) {
         try {
@@ -83,7 +83,11 @@ class ModernHook : XposedModule() {
                         val code = args.getOrNull(0) as? Int
                         val pkgName = args.getOrNull(2) as? String
 
+                        // 放行 GMS 自身的自启动
                         if (pkgName == GMS_PKG && (code == OP_AUTO_START || code == 11)) {
+                            MODE_ALLOWED
+                        } else if (code == OP_AUTO_START) {
+                            // 当检查其他应用（如 Telegram）的自启动时，放行自启动
                             MODE_ALLOWED
                         } else {
                             chain.proceed()
@@ -137,7 +141,43 @@ class ModernHook : XposedModule() {
     }
 
     /**
-     * 4. 系统启动后执行特权命令，并监听/保持 MILLET_NO_RESTRICT_APP 白名单
+     * 4. 关键：拦截小米 BroadcastQueueModernStubImpl.shouldStopBroadcastDispatch
+     * 彻底阻止小米框架在派发广播时掐断 FCM 消息！
+     */
+    private fun hookXiaomiBroadcastStub(classLoader: ClassLoader) {
+        try {
+            val stubClass = classLoader.loadClass("com.android.server.am.BroadcastQueueModernStubImpl")
+            for (m in stubClass.declaredMethods) {
+                if (m.name == "shouldStopBroadcastDispatch" && m.returnType == Boolean::class.javaPrimitiveType) {
+                    hook(m).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                        // 检查参数中是否包含 FCM 广播
+                        var isFcm = false
+                        for (arg in chain.args) {
+                            if (arg != null) {
+                                val str = arg.toString()
+                                if (str.contains("c2dm.intent.RECEIVE") || str.contains("c2dm.intent.REGISTRATION")) {
+                                    isFcm = true
+                                    break
+                                }
+                            }
+                        }
+                        if (isFcm) {
+                            log(Log.INFO, TAG, "阻止小米拦截 FCM 广播分发 -> 放行!")
+                            false // 绝不停止分发！
+                        } else {
+                            chain.proceed()
+                        }
+                    }
+                    log(Log.INFO, TAG, "成功 Hook BroadcastQueueModernStubImpl.shouldStopBroadcastDispatch")
+                }
+            }
+        } catch (t: Throwable) {
+            log(Log.WARN, TAG, "未找到 BroadcastQueueModernStubImpl: ${t.message}")
+        }
+    }
+
+    /**
+     * 5. 系统启动后执行特权命令，并监听/保持 MILLET_NO_RESTRICT_APP 白名单
      */
     private fun hookSystemReady(classLoader: ClassLoader) {
         try {
@@ -179,10 +219,8 @@ class ModernHook : XposedModule() {
             val context = contextField.get(amsInstance) as? Context ?: return
             val resolver = context.contentResolver
 
-            // 立即确保包含 GMS
             ensureGmsInMillet(resolver)
 
-            // 监听 MILLET_NO_RESTRICT_APP 变动（PowerKeeper 覆写时立刻补回 GMS）
             val uri = Settings.System.getUriFor(SETTING_MILLET)
             val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                 override fun onChange(selfChange: Boolean, uri: Uri?) {
