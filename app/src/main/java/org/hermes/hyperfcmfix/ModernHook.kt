@@ -116,23 +116,36 @@ class ModernHook : XposedModule() {
                 for (m in clazz.declaredMethods) {
                     if (m.name == methodName) {
                         hook(m).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
+                            var isFcm = false
                             for (arg in chain.args) {
                                 if (arg is Intent) {
                                     val action = arg.action
                                     if (action == "com.google.android.c2dm.intent.RECEIVE" ||
                                         action == "com.google.android.c2dm.intent.REGISTRATION"
                                     ) {
+                                        isFcm = true
                                         var flags = arg.flags
                                         flags = flags or FLAG_RECEIVER_INCLUDE_STOPPED_PACKAGES
                                         flags = flags and FLAG_RECEIVER_EXCLUDE_STOPPED_PACKAGES.inv()
                                         arg.flags = flags
+                                        log(Log.INFO, TAG, "已为 FCM 广播注入穿透标记: $action")
                                     }
                                     break
                                 }
                             }
+                            if (isFcm) {
+                                // 核心黑科技：当 appOp 为 -1 时，改写为 11 (OP_VIBRATE / 系统放行操作码)
+                                for (i in chain.args.indices) {
+                                    val v = chain.args[i]
+                                    if (v is Int && v == -1) {
+                                        chain.args[i] = 11
+                                        log(Log.INFO, TAG, "改写 FCM broadcastIntentLocked appOp: -1 -> 11")
+                                    }
+                                }
+                            }
                             chain.proceed()
                         }
-                        log(Log.INFO, TAG, "已安全 Hook $className.$methodName 广播穿透")
+                        log(Log.INFO, TAG, "已安全 Hook $className.$methodName 广播穿透与 appOp 改写")
                     }
                 }
             } catch (ignored: Throwable) {
@@ -150,12 +163,15 @@ class ModernHook : XposedModule() {
             for (m in stubClass.declaredMethods) {
                 if (m.name == "shouldStopBroadcastDispatch" && m.returnType == Boolean::class.javaPrimitiveType) {
                     hook(m).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept { chain ->
-                        // 检查参数中是否包含 FCM 广播
+                        // 检查参数中是否包含 FCM 广播或者直接拦截
                         var isFcm = false
                         for (arg in chain.args) {
                             if (arg != null) {
                                 val str = arg.toString()
-                                if (str.contains("c2dm.intent.RECEIVE") || str.contains("c2dm.intent.REGISTRATION")) {
+                                if (str.contains("c2dm.intent.RECEIVE") ||
+                                    str.contains("c2dm.intent.REGISTRATION") ||
+                                    str.contains("com.google.android.gms")
+                                ) {
                                     isFcm = true
                                     break
                                 }
